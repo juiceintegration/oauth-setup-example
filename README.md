@@ -42,8 +42,8 @@ export const config = {
 	clientSecret: "PASTE_CLIENT_SECRET_HERE",
 	authorizationUrl: "https://juicereel.com/oauth2/authorize",
 	tokenUrl: "https://external-api.juicereel.com/oauth2/token",
-	redirectUri: "http://localhost:6578/callback",
-	scopes: ["subscribers.read", "bets.open.read", "bets.settled.read"],
+	redirectUri: "http://localhost:6578/callback", // must be added as a redirect URI for this to work in oauth app settings of https://www.juicereel.com/settings/oauth-applications
+	scopes: ["subscribers.read", "bets.open.read", "bets.settled.read"], // must be a subset of the approved scopes from https://www.juicereel.com/settings/oauth-applications
 };
 ```
 
@@ -52,9 +52,6 @@ Request only scopes that were approved for your application:
 - `subscribers.read` reads current subscribers.
 - `bets.open.read` reads open bets.
 - `bets.settled.read` reads settled bets.
-- `/oauth2/me` does not require a scope.
-
-Never commit `config.local.mjs`. It is ignored by this repository because it contains the client secret.
 
 ## Run the source code
 
