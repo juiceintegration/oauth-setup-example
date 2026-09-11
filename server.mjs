@@ -67,6 +67,10 @@ function hasConfiguredCredentials() {
 	return !config.clientId.startsWith("PASTE_") && !config.clientSecret.startsWith("PASTE_");
 }
 
+function oauthExternalApiUrl() {
+	return (config.oauthExternalApiUrl ?? "https://external-api.juicereel.com").replace(/\/$/, "");
+}
+
 function sameValue(left, right) {
 	const leftBuffer = Buffer.from(left ?? "");
 	const rightBuffer = Buffer.from(right ?? "");
@@ -96,7 +100,74 @@ const server = http.createServer(async (request, response) => {
        <h1>Connect Juice Reel</h1>
        <p>This standalone app starts Authorization Code + PKCE, receives the callback, and exchanges the code from its backend.</p>
        <a class="button" href="/connect">Connect Juice Reel</a>
+       <a class="button secondary" href="/generate-checkout-session">Generate checkout session</a>
        <div class="notice">${escapeHtml(configurationNotice)}</div>`
+		);
+		return;
+	}
+
+	if (request.method === "GET" && requestUrl.pathname === "/generate-checkout-session") {
+		if (!hasConfiguredCredentials()) {
+			sendHtml(response, 500, "OAuth client not configured", `<p class="eyebrow">Configuration required</p><h1>Add your credentials</h1><p>Update <code>config.local.mjs</code>, then restart this server.</p><a class="button secondary" href="/">Back</a>`);
+			return;
+		}
+
+		if (!config.checkoutSuccessRedirectUri || !config.checkoutCancelRedirectUri) {
+			sendHtml(response, 500, "Checkout callbacks not configured", `<p class="eyebrow">Configuration required</p><h1>Add checkout callback URLs</h1><p>Set <code>checkoutSuccessRedirectUri</code> and <code>checkoutCancelRedirectUri</code> in <code>config.local.mjs</code>.</p><a class="button secondary" href="/">Back</a>`);
+			return;
+		}
+
+		try {
+			const state = base64url(crypto.randomBytes(32));
+			const verifier = base64url(crypto.randomBytes(32));
+			const challenge = base64url(crypto.createHash("sha256").update(verifier).digest());
+			const basicAuth = Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64");
+			const checkoutResponse = await fetch(`${oauthExternalApiUrl()}/checkout/sessions`, {
+				method: "POST",
+				headers: {
+					Authorization: `Basic ${basicAuth}`,
+					"Content-Type": "application/json",
+					"X-OAuth-Client-Id": config.clientId,
+				},
+				body: JSON.stringify({
+					successUrl: config.checkoutSuccessRedirectUri,
+					cancelUrl: config.checkoutCancelRedirectUri,
+					scopes: config.scopes,
+					state,
+					codeChallenge: challenge,
+				}),
+			});
+			const responseBody = await checkoutResponse.text();
+			let checkout;
+			try {
+				checkout = JSON.parse(responseBody);
+			} catch {
+				throw new Error(`Checkout endpoint returned non-JSON HTTP ${checkoutResponse.status}`);
+			}
+
+			if (!checkoutResponse.ok || typeof checkout.checkoutUrl !== "string") {
+				throw new Error(checkout.error ?? `Checkout session creation failed with HTTP ${checkoutResponse.status}`);
+			}
+
+			sessions.set(checkout.checkoutSessionId, { state, verifier, createdAt: Date.now() });
+			response.writeHead(302, {
+				Location: checkout.checkoutUrl,
+				"Set-Cookie": `${SESSION_COOKIE}=${encodeURIComponent(checkout.checkoutSessionId)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`,
+				"Cache-Control": "no-store",
+			});
+			response.end();
+		} catch (error) {
+			sendHtml(response, 502, "Checkout session failed", `<p class="eyebrow">Checkout session failed</p><h1>Could not start checkout</h1><p>${escapeHtml(error instanceof Error ? error.message : "Unknown error")}</p><a class="button secondary" href="/">Try again</a>`);
+		}
+		return;
+	}
+
+	if (request.method === "GET" && requestUrl.pathname === "/checkout/cancel") {
+		sendHtml(
+			response,
+			200,
+			"Checkout cancelled",
+			`<p class="eyebrow">Checkout cancelled</p><h1>No changes were made</h1><p>The checkout was cancelled before the subscription was completed.</p><a class="button" href="/">Try again</a>`
 		);
 		return;
 	}
@@ -139,7 +210,10 @@ const server = http.createServer(async (request, response) => {
 		return;
 	}
 
-	if (request.method === "GET" && requestUrl.pathname === "/callback") {
+	if (request.method === "GET" && ["/callback", "/checkout/success"].includes(requestUrl.pathname)) {
+		const callbackRedirectUri = requestUrl.pathname === "/checkout/success"
+			? config.checkoutSuccessRedirectUri
+			: config.redirectUri;
 		const sessionId = parseCookies(request)[SESSION_COOKIE];
 		const session = sessionId ? sessions.get(sessionId) : null;
 		if (sessionId) sessions.delete(sessionId);
@@ -161,7 +235,7 @@ const server = http.createServer(async (request, response) => {
 
 		try {
 			const basicAuth = Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64");
-			const tokenResponse = await fetch(config.tokenUrl, {
+			const tokenResponse = await fetch(`${oauthExternalApiUrl()}/oauth2/token`, {
 				method: "POST",
 				headers: {
 					Authorization: `Basic ${basicAuth}`,
@@ -171,7 +245,7 @@ const server = http.createServer(async (request, response) => {
 				body: new URLSearchParams({
 					grant_type: "authorization_code",
 					code,
-					redirect_uri: config.redirectUri,
+					redirect_uri: callbackRedirectUri,
 					code_verifier: session.verifier,
 				}),
 			});

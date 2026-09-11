@@ -15,7 +15,7 @@ The client secret and PKCE verifier are never sent to browser JavaScript. For de
 - Node.js 18 or newer.
 - An approved Juice Reel OAuth application.
 - The application's client ID and one-time client secret.
-- `http://localhost:6578/callback` registered as an exact redirect URI for the application.
+- `http://localhost:6578/callback` and `http://localhost:6578/checkout/cancel` registered as exact redirect URIs for the application.
 
 Create and manage applications from the OAuth applications section of your Juice Reel account settings.
 
@@ -41,8 +41,10 @@ export const config = {
 	clientId: "PASTE_CLIENT_ID_HERE",
 	clientSecret: "PASTE_CLIENT_SECRET_HERE",
 	authorizationUrl: "https://juicereel.com/oauth2/authorize",
-	tokenUrl: "https://external-api.juicereel.com/oauth2/token",
+	oauthExternalApiUrl: "https://external-api.juicereel.com", // optional; defaults to this URL
 	redirectUri: "http://localhost:6578/callback", // must be added as a redirect URI for this to work in oauth app settings of https://www.juicereel.com/settings/oauth-applications
+	checkoutSuccessRedirectUri: "http://localhost:6578/checkout/success",
+	checkoutCancelRedirectUri: "http://localhost:6578/checkout/cancel",
 	scopes: ["subscribers.read", "bets.open.read", "bets.settled.read"], // must be a subset of the approved scopes from https://www.juicereel.com/settings/oauth-applications
 };
 ```
@@ -69,6 +71,21 @@ Juice Reel OAuth test client running at http://localhost:6578
 
 Open [http://localhost:6578](http://localhost:6578) and select **Connect Juice Reel**. After login and consent, Juice Reel redirects the browser to the registered callback. This Node server validates the callback and performs the token exchange server-side.
 
+## Hosted checkout and buyer access
+
+Use the checkout flow when your application wants to offer a Juice Reel subscription on its own site while using Juice Reel to host the purchase experience. It is useful when you want to:
+
+- send a buyer to a Juice Reel-hosted checkout page;
+- let the buyer choose from the seller's available subscription products and durations;
+- receive an OAuth token for the buyer after the purchase and consent flow; and
+- use that token to call the approved API endpoints for the recently authenticated buyer, such as subscriber status or bet data.
+
+Select **Generate checkout session** to start the flow. The example generates `state` and a PKCE challenge on the Node server, then creates a checkout session with HTTP Basic authentication using the OAuth client's ID and secret. The browser is redirected to the returned `checkoutUrl`, which hosts the Juice Reel purchase flow. No `productId` is sent when creating the session; the buyer chooses the seller and subscription duration in the hosted checkout experience.
+
+After checkout succeeds, Juice Reel records the purchase and shows the buyer the OAuth consent screen for the requested scopes. If the buyer authorizes access, Juice Reel redirects to the registered success callback with a short-lived authorization code and the original `state`. The example validates `state` and exchanges the code server-side at `/oauth2/token` using the PKCE verifier. The resulting access token represents the buyer and can be used to call the endpoints allowed by the approved scopes.
+
+If the buyer cancels checkout, Juice Reel redirects to the registered cancel callback with the cancellation result and original `state`; no access token is issued. Both callback URLs must be registered as exact redirect URIs on the OAuth application. Keep the client secret, PKCE verifier, authorization code, and access/refresh tokens on your backend—never place them in browser code or URLs.
+
 The example displays the token response for demonstration. A production application should encrypt and store tokens server-side, associate them with its signed-in user, and never render them in a page.
 
 ## OAuth endpoints
@@ -79,7 +96,7 @@ The interactive authorization screen is hosted by Juice Reel:
 GET https://juicereel.com/oauth2/authorize
 ```
 
-Server-to-server OAuth and resource requests use:
+Server-to-server OAuth, checkout session, and resource requests use the configured `oauthExternalApiUrl` base URL (defaulting to `https://external-api.juicereel.com`):
 
 ```text
 https://external-api.juicereel.com/oauth2
@@ -88,7 +105,8 @@ https://external-api.juicereel.com/oauth2
 Available endpoints include:
 
 ```text
-POST /token
+POST /oauth2/token
+POST /checkout/sessions
 POST /revoke
 GET  /me
 GET  /bets/open
